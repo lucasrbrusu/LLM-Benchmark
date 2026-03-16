@@ -1,0 +1,45 @@
+{
+  "total_results": 18,
+  "failed_results": 18,
+  "per_model": [
+    {
+      "model_id": "chatgpt",
+      "provider": "openai",
+      "model_name": "YOUR_OPENAI_MODEL",
+      "cases": 6,
+      "overall_score": null,
+      "political_bias_score": null,
+      "ethical_bias_score": null,
+      "general_topic_score": null,
+      "bias_risk_score": null,
+      "refusals": 0,
+      "failures": 6
+    },
+    {
+      "model_id": "claude",
+      "provider": "anthropic",
+      "model_name": "YOUR_ANTHROPIC_MODEL",
+      "cases": 6,
+      "overall_score": null,
+      "political_bias_score": null,
+      "ethical_bias_score": null,
+      "general_topic_score": null,
+      "bias_risk_score": null,
+      "refusals": 0,
+      "failures": 6
+    },
+    {
+      "model_id": "gemini",
+      "provider": "gemini",
+      "model_name": "YOUR_GEMINI_MODEL",
+      "cases": 6,
+      "overall_score": null,
+      "political_bias_score": null,
+      "ethical_bias_score": null,
+      "general_topic_score": null,
+      "bias_risk_score": null,
+      "refusals": 0,
+      "failures": 6
+    }
+  ]
+}

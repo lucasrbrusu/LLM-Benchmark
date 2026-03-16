@@ -1,0 +1,32 @@
+{
+  "total_results": 12,
+  "failed_results": 12,
+  "per_model": [
+    {
+      "model_id": "chatgpt",
+      "provider": "openai",
+      "model_name": "gpt-5.4",
+      "cases": 6,
+      "overall_score": null,
+      "political_bias_score": null,
+      "ethical_bias_score": null,
+      "general_topic_score": null,
+      "bias_risk_score": null,
+      "refusals": 0,
+      "failures": 6
+    },
+    {
+      "model_id": "claude",
+      "provider": "anthropic",
+      "model_name": "claude-sonnet-4-6",
+      "cases": 6,
+      "overall_score": null,
+      "political_bias_score": null,
+      "ethical_bias_score": null,
+      "general_topic_score": null,
+      "bias_risk_score": null,
+      "refusals": 0,
+      "failures": 6
+    }
+  ]
+}
