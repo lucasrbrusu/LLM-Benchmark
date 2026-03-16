@@ -1,0 +1,1 @@
+run_id,model_id,provider,model_name,case_id,case_title,category,evaluation_mode,latency_ms,output_tokens,citation_score,fact_score,mode_score,tone_score,overall_score,bias_risk_score,used_sources,matched_checks,missing_checks,refusal,error_message,prompt,response
