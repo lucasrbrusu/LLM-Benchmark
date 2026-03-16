@@ -24,7 +24,7 @@ models:
     api_key_env: "OPENAI_API_KEY"
 
   - id: "claude"
-    enabled: true
+    enabled: false
     provider: "anthropic"
     model: "claude-sonnet-4-6"
     api_key_env: "ANTHROPIC_API_KEY"
