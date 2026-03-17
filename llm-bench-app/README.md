@@ -1,65 +1,65 @@
-# LLM Bias Benchmark MVP
+# LLM Benchmark App
 
-This project is a small Python benchmark for comparing how different LLMs handle:
+This project is now a small Python desktop app for benchmarking one selected LLM at a time.
 
-- political bias and policy trade-offs
-- ethical bias and fairness questions
-- a couple of general factual topics
+The app lets the user:
 
-The benchmark is source-grounded. Each test case includes short notes from real sources such as NIST, UNESCO, the European Commission, OECD, FTC, EEOC, NASA, WHO, CDC, and NOAA. Models are asked to answer using only those notes, and the app scores how well they stay grounded, cite sources, and handle the topic in the right style.
+- choose a model from `config.yaml`
+- choose one or more test suites: `Lite`, `Regular`, `Stress Test`
+- run the benchmark from a simple desktop window
+- read per-suite scores, evidence, and summaries after the run
 
-## Why this version is simpler
+Each selected suite also runs a small non-political calibration pack so the app can estimate:
 
-- One command to run: `python app.py`
-- No Streamlit dashboard
-- SQLite for run history
-- CSV and Markdown exports in `results/`
-- Small Python files and plain YAML config
+- `Political accuracy` higher is better
+- `Political bias` lower is better
+- `Ethical implications` higher is better
+- `Performance impact: due to bias` lower is better
+- `Performance impact: due to regulations` lower is better
+- `Rate of learning` higher is better
+- `Bias risk` lower is better
+- `General Topics: Academic` higher is better
+- `General Topics` higher is better
 
-## Quick start
+The app then combines those into an `Overall Benchmark Score`.
 
-1. Install dependencies:
+## Run the app
+
+1. Install the dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Open `config.yaml`.
+2. Open `config.yaml` and set up the models you want available in the app.
 
-3. Enable the model providers you want to test and set the real model IDs.
+3. Set any required API keys as environment variables.
 
-4. Set the matching API keys as environment variables.
-
-5. Run the benchmark:
+4. Start the desktop app:
 
 ```bash
 python app.py
 ```
 
-## Supported providers
+## Headless mode
 
-- `openai`
-- `anthropic`
-- `gemini`
-- `github_models`
-- `openai_compatible`
+There is also a simple headless mode for testing:
 
-Notes:
-
-- `github_models` is the simplest GitHub-side API path for models hosted through GitHub Models.
-- Consumer GitHub Copilot chat is not called directly by this MVP because it is not exposed as a simple public chat API in the same way.
-- `openai_compatible` works with local or hosted endpoints that implement the OpenAI chat completions shape.
+```bash
+python app.py --headless --model-id mock_demo --tests Lite
+```
 
 ## Outputs
 
-- SQLite DB: `results/bias_bench.sqlite`
-- Raw CSV export: `results/*_results.csv`
-- Markdown report: `results/*_report.md`
-- JSON summary: `results/*_summary.json`
+Each run writes:
 
-## What the scores mean
+- SQLite data to `results/bias_bench.sqlite`
+- case CSV to `results/*_cases.csv`
+- Markdown report to `results/*_report.md`
+- JSON summary to `results/*_summary.json`
 
-- `overall_score`: how well the model covered the source-backed facts and followed the requested style
-- `bias_risk_score`: a heuristic proxy for imbalance on political and ethical cases only
+## Notes
 
-This is an MVP. It is useful for side-by-side comparisons, but it is not a definitive scientific measurement of ideology.
+- Double and triple prompts are run as one conversational test.
+- The scoring is deterministic and evidence-backed, but it is still a benchmark heuristic, not a scientific proof of ideology.
+- `mock_demo` is included as a simple local test model that does not call an external API.
