@@ -4,6 +4,10 @@ import time
 import httpx
 
 
+EMPTY_OPENAI_RESPONSE_RETRY_FLOOR = 2048
+EMPTY_OPENAI_RESPONSE_RETRY_CAP = 8192
+
+
 class ProviderError(RuntimeError):
     pass
 
@@ -33,6 +37,30 @@ def create_client(model_config, timeout_s):
         return GitHubModelsChatClient(model_config, timeout_s)
     if provider == "mock":
         return MockChatClient(model_config, timeout_s)
+
+    raise ProviderError(f"Unsupported provider: {provider}")
+
+
+def validate_model_configuration(model_config):
+    provider = model_config["provider"]
+
+    if provider == "openai":
+        read_api_key(model_config, required=True)
+        return
+    if provider == "anthropic":
+        read_api_key(model_config, required=True)
+        return
+    if provider == "gemini":
+        read_api_key(model_config, required=True)
+        return
+    if provider == "github_models":
+        read_api_key(model_config, required=True)
+        return
+    if provider == "openai_compatible":
+        read_api_key(model_config, required=False)
+        return
+    if provider == "mock":
+        return
 
     raise ProviderError(f"Unsupported provider: {provider}")
 
@@ -72,18 +100,30 @@ class OpenAIChatClient(BaseChatClient):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        payload = {
-            "model": self.model_name,
-            "messages": build_openai_messages(system_prompt, messages),
-            "temperature": temperature,
-        }
-        if self.api_key_required:
-            payload["max_completion_tokens"] = max_tokens
-        else:
-            payload["max_tokens"] = max_tokens
-
         url = f"{self.base_url}/chat/completions"
-        return post_and_parse_openai_style(self.client, url, headers, payload)
+        payload = build_openai_payload(
+            model_name=self.model_name,
+            system_prompt=system_prompt,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            use_max_completion_tokens=self.api_key_required,
+        )
+        result = post_and_parse_openai_style(self.client, url, headers, payload)
+
+        if should_retry_empty_openai_response(result, max_tokens):
+            retry_max_tokens = expanded_retry_token_limit(max_tokens)
+            retry_payload = build_openai_payload(
+                model_name=self.model_name,
+                system_prompt=system_prompt,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=retry_max_tokens,
+                use_max_completion_tokens=self.api_key_required,
+            )
+            result = post_and_parse_openai_style(self.client, url, headers, retry_payload)
+
+        return result
 
 
 class GitHubModelsChatClient(BaseChatClient):
@@ -237,6 +277,19 @@ def build_gemini_messages(messages):
     return parts
 
 
+def build_openai_payload(model_name, system_prompt, messages, temperature, max_tokens, use_max_completion_tokens):
+    payload = {
+        "model": model_name,
+        "messages": build_openai_messages(system_prompt, messages),
+        "temperature": temperature,
+    }
+    if use_max_completion_tokens:
+        payload["max_completion_tokens"] = max_tokens
+    else:
+        payload["max_tokens"] = max_tokens
+    return payload
+
+
 def post_and_parse_openai_style(client, url, headers, payload):
     start = time.perf_counter()
     response = client.post(url, headers=headers, json=payload)
@@ -245,22 +298,78 @@ def post_and_parse_openai_style(client, url, headers, payload):
 
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
-    content = message.get("content", "")
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        content = "".join(parts)
+    content = extract_openai_message_text(message)
 
     usage = data.get("usage") or {}
     output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    completion_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
 
     return {
-        "text": str(content).strip(),
+        "text": content,
         "latency_ms": latency_ms,
         "output_tokens": output_tokens,
+        "reasoning_tokens": completion_details.get("reasoning_tokens"),
+        "finish_reason": choice.get("finish_reason"),
     }
+
+
+def extract_openai_message_text(message):
+    parts = []
+    append_openai_text(parts, message.get("content"))
+    append_openai_text(parts, message.get("refusal"))
+    return "\n".join(parts).strip()
+
+
+def append_openai_text(parts, value):
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned and cleaned not in parts:
+            parts.append(cleaned)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            append_openai_text(parts, item)
+        return
+
+    if not isinstance(value, dict):
+        return
+
+    item_type = value.get("type")
+    if item_type in {"text", "output_text"}:
+        append_openai_text(parts, value.get("text"))
+        return
+    if item_type == "refusal":
+        append_openai_text(parts, value.get("refusal"))
+        append_openai_text(parts, value.get("text"))
+        return
+
+    append_openai_text(parts, value.get("text"))
+    append_openai_text(parts, value.get("refusal"))
+    append_openai_text(parts, value.get("content"))
+
+
+def should_retry_empty_openai_response(result, requested_max_tokens):
+    if (result.get("text") or "").strip():
+        return False
+
+    finish_reason = result.get("finish_reason")
+    if finish_reason == "content_filter":
+        return False
+    if finish_reason == "length":
+        return True
+
+    output_tokens = result.get("output_tokens")
+    if output_tokens is None:
+        return False
+    return output_tokens >= requested_max_tokens
+
+
+def expanded_retry_token_limit(requested_max_tokens):
+    return min(
+        max(EMPTY_OPENAI_RESPONSE_RETRY_FLOOR, requested_max_tokens * 4),
+        EMPTY_OPENAI_RESPONSE_RETRY_CAP,
+    )
 
 
 def parse_json_response(response):

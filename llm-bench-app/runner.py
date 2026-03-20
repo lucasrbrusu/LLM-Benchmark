@@ -6,8 +6,16 @@ from pathlib import Path
 
 import yaml
 
-from adapters import create_client
-from benchmark_catalog import CONTROL_CASES, SUITE_INFO, SUITE_ORDER, TEST_SUITES
+from adapters import create_client, validate_model_configuration
+from benchmark_catalog import (
+    CONTROL_CASES,
+    SUITE_INFO,
+    SUITE_ORDER,
+    count_category_cases,
+    count_category_prompts,
+    find_category,
+    get_suite_categories,
+)
 from db import (
     finish_run,
     init_db,
@@ -33,10 +41,18 @@ def list_models(config_path):
     return list(config.get("models", []))
 
 
-def run_benchmark(config_path, model_id, selected_suites, progress_callback=None):
+def run_benchmark(
+    config_path,
+    model_id,
+    selected_suites,
+    selected_category_ids=None,
+    progress_callback=None,
+):
     config, config_text = load_config(config_path)
     model = get_model(config, model_id)
+    validate_model_configuration(model)
     suites = validate_suites(selected_suites)
+    selected_category_ids = validate_selected_categories(suites, selected_category_ids)
 
     run_config = config.get("run", {})
     benchmark_config = config.get("benchmark", {})
@@ -61,7 +77,7 @@ def run_benchmark(config_path, model_id, selected_suites, progress_callback=None
     max_tokens = int(benchmark_config.get("max_tokens", 600))
     timeout_s = int(benchmark_config.get("timeout_s", 120))
     progress_state = {
-        "total_units": calculate_total_units(suites),
+        "total_units": calculate_total_units(suites, selected_category_ids),
         "completed_units": 0,
     }
 
@@ -85,6 +101,7 @@ def run_benchmark(config_path, model_id, selected_suites, progress_callback=None
                 system_prompt=system_prompt,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                selected_category_ids=selected_category_ids,
                 progress_state=progress_state,
                 progress_callback=progress_callback,
             )
@@ -106,7 +123,7 @@ def run_benchmark(config_path, model_id, selected_suites, progress_callback=None
     finally:
         client.close()
 
-    summary = build_run_summary(model, suites, suite_results)
+    summary = build_run_summary(model, suites, selected_category_ids, suite_results)
     completed_at = utc_now()
     finish_run(db_path, run_id, completed_at, summary)
 
@@ -148,42 +165,59 @@ def run_suite(
     system_prompt,
     temperature,
     max_tokens,
+    selected_category_ids,
     progress_state,
     progress_callback=None,
 ):
     case_results = []
-    for case in TEST_SUITES[suite_name]:
-        prompt_results = run_case(
-            client=client,
-            suite_name=suite_name,
-            case=case,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            progress_state=progress_state,
-            progress_callback=progress_callback,
-        )
-
-        for prompt_index, prompt_result in enumerate(prompt_results, start=1):
-            insert_prompt_result(
-                db_path,
-                run_id,
-                suite_name,
-                case["id"],
-                prompt_index,
-                prompt_result,
+    category_results = []
+    for category_entry in selected_categories_for_suite(suite_name, selected_category_ids):
+        category_case_results = []
+        for case in category_entry["cases"]:
+            prompt_results = run_case(
+                client=client,
+                suite_name=suite_name,
+                case=case,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                progress_state=progress_state,
+                progress_callback=progress_callback,
             )
 
-        case_result = score_political_case(case, prompt_results)
-        insert_case_result(db_path, run_id, suite_name, case_result)
-        case_results.append(case_result)
+            for prompt_index, prompt_result in enumerate(prompt_results, start=1):
+                insert_prompt_result(
+                    db_path,
+                    run_id,
+                    suite_name,
+                    case["id"],
+                    prompt_index,
+                    prompt_result,
+                )
 
-        emit(
-            progress_callback,
-            "case_complete",
-            suite_name=suite_name,
-            case_title=case["title"],
-            score=case_result["overall_quality"],
+            case_result = score_political_case(case, prompt_results)
+            case_result["category_id"] = category_entry["id"]
+            case_result["category_title"] = category_entry["title"]
+            insert_case_result(db_path, run_id, suite_name, case_result)
+            case_results.append(case_result)
+            category_case_results.append(case_result)
+
+            emit(
+                progress_callback,
+                "case_complete",
+                suite_name=suite_name,
+                case_title=case["title"],
+                score=case_result["overall_quality"],
+            )
+
+        category_results.append(
+            {
+                "category_id": category_entry["id"],
+                "category_title": category_entry["title"],
+                "case_count": count_category_cases(category_entry),
+                "prompt_count": count_category_prompts(category_entry),
+                "cases": category_case_results,
+            }
         )
 
     control_results = run_control_pack(
@@ -200,6 +234,7 @@ def run_suite(
 
     suite_scores = build_suite_scores(suite_name, case_results, control_results)
     suite_scores["cases"] = case_results
+    suite_scores["selected_categories"] = category_results
     suite_scores["controls"] = control_results
     return suite_scores
 
@@ -306,7 +341,7 @@ def run_control_pack(
     return control_results
 
 
-def build_run_summary(model, selected_suites, suite_results):
+def build_run_summary(model, selected_suites, selected_category_ids, suite_results):
     weights = normalised_suite_weights(selected_suites)
 
     categories = {}
@@ -335,6 +370,7 @@ def build_run_summary(model, selected_suites, suite_results):
             "model_name": model["model"],
         },
         "selected_suites": selected_suites,
+        "selected_categories": build_selected_category_summary(selected_suites, selected_category_ids),
         "categories": categories,
         "overall_benchmark_score": overall_score,
         "suite_summaries": [
@@ -344,6 +380,15 @@ def build_run_summary(model, selected_suites, suite_results):
                 "categories": suite["categories"],
                 "summary": suite["summary"],
                 "evidence": suite["evidence"],
+                "selected_categories": [
+                    {
+                        "category_id": entry["category_id"],
+                        "category_title": entry["category_title"],
+                        "case_count": entry["case_count"],
+                        "prompt_count": entry["prompt_count"],
+                    }
+                    for entry in suite.get("selected_categories", [])
+                ],
             }
             for suite in suite_results
         ],
@@ -353,6 +398,8 @@ def build_run_summary(model, selected_suites, suite_results):
 def write_case_csv(path, suite_results):
     fieldnames = [
         "suite_name",
+        "category_id",
+        "category_title",
         "case_id",
         "title",
         "mode",
@@ -373,6 +420,8 @@ def write_case_csv(path, suite_results):
                 writer.writerow(
                     {
                         "suite_name": suite["suite_name"],
+                        "category_id": case.get("category_id", ""),
+                        "category_title": case.get("category_title", ""),
                         "case_id": case["case_id"],
                         "title": case["title"],
                         "mode": case["mode"],
@@ -414,6 +463,42 @@ def write_report(report_path, run_id, model, started_at, completed_at, suite_res
     for name, value in summary["categories"].items():
         lines.append(f"- {name}: `{format_score(value)}`")
 
+    lines.extend(
+        [
+            "",
+            "## Test Review",
+            "",
+            "This section lists the selected prompt categories and the exact prompts used in the run.",
+        ]
+    )
+
+    for suite in suite_results:
+        lines.extend(
+            [
+                "",
+                f"### {suite['suite_name']}",
+                "",
+            ]
+        )
+        for category_entry in suite.get("selected_categories", []):
+            lines.extend(
+                [
+                    f"#### {category_entry['category_title']}",
+                    "",
+                    f"- Case count: `{category_entry['case_count']}`",
+                    f"- Prompt turns: `{category_entry['prompt_count']}`",
+                    "",
+                ]
+            )
+            for case in category_entry["cases"]:
+                lines.append(f"Prompt Set: `{case['title']}` (`{case['mode']}`)")
+                for index, prompt in enumerate(case["prompts"], start=1):
+                    lines.append(f"Prompt {index}:")
+                    lines.append("```text")
+                    lines.append(prompt["prompt"])
+                    lines.append("```")
+                lines.append("")
+
     for suite in suite_results:
         lines.extend(
             [
@@ -423,7 +508,7 @@ def write_report(report_path, run_id, model, started_at, completed_at, suite_res
                 f"- Overall Benchmark Score: `{format_score(suite['overall_benchmark_score'])}`",
                 f"- Suite Description: {SUITE_INFO[suite['suite_name']]['description']}",
                 "",
-                "### Categories",
+                "### Score Categories",
                 "",
             ]
         )
@@ -451,30 +536,35 @@ def write_report(report_path, run_id, model, started_at, completed_at, suite_res
                 "",
             ]
         )
-        for case in suite["cases"]:
-            lines.append(f"#### {case['title']}")
+        for category_entry in suite.get("selected_categories", []):
+            lines.append(f"#### {category_entry['category_title']}")
             lines.append("")
-            lines.append(f"- Political accuracy: `{format_score(case['political_accuracy'])}`")
-            lines.append(f"- Political bias: `{format_score(case['political_bias'])}`")
-            lines.append(f"- Ethical implications: `{format_score(case['ethical_implications'])}`")
-            lines.append(f"- Bias risk: `{format_score(case['bias_risk'])}`")
-            lines.append(f"- Regulation pressure: `{format_score(case['regulation_penalty'])}`")
-            lines.append(f"- Summary: {case['summary']}")
-            if case["evidence"]:
-                lines.append("- Evidence:")
-                for item in case["evidence"]:
-                    lines.append(f"  - {item}")
-            lines.append("")
-            for index, prompt in enumerate(case["prompts"], start=1):
-                lines.append(f"Prompt {index}:")
-                lines.append("```text")
-                lines.append(prompt["prompt"])
-                lines.append("```")
-                lines.append("Response:")
-                lines.append("```text")
-                lines.append(prompt.get("response", "").strip() or "(no response)")
-                lines.append("```")
+            for case in category_entry["cases"]:
+                lines.append(f"##### {case['title']}")
                 lines.append("")
+                lines.append(f"- Political accuracy: `{format_score(case['political_accuracy'])}`")
+                lines.append(f"- Political bias: `{format_score(case['political_bias'])}`")
+                lines.append(f"- Ethical implications: `{format_score(case['ethical_implications'])}`")
+                lines.append(f"- Bias risk: `{format_score(case['bias_risk'])}`")
+                lines.append(f"- Regulation pressure: `{format_score(case['regulation_penalty'])}`")
+                lines.append(f"- Summary: {case['summary']}")
+                if case["evidence"]:
+                    lines.append("- Evidence:")
+                    for item in case["evidence"]:
+                        lines.append(f"  - {item}")
+                lines.append("")
+                for index, prompt in enumerate(case["prompts"], start=1):
+                    lines.append(f"Prompt {index}:")
+                    lines.append("```text")
+                    lines.append(prompt["prompt"])
+                    lines.append("```")
+                    if prompt.get("error_message"):
+                        lines.append(f"Error: `{prompt['error_message']}`")
+                    lines.append("Response:")
+                    lines.append("```text")
+                    lines.append(prompt.get("response", "").strip() or "(no response)")
+                    lines.append("```")
+                    lines.append("")
 
         lines.extend(
             [
@@ -505,11 +595,65 @@ def validate_suites(selected_suites):
         raise ValueError("Select at least one test suite.")
     valid = []
     for name in selected_suites:
-        if name not in TEST_SUITES:
+        if not get_suite_categories(name):
             raise ValueError(f"Unknown suite: {name}")
         if name not in valid:
             valid.append(name)
     return [name for name in SUITE_ORDER if name in valid]
+
+
+def validate_selected_categories(selected_suites, selected_category_ids):
+    if not selected_category_ids:
+        return {
+            suite_name: [entry["id"] for entry in get_suite_categories(suite_name)]
+            for suite_name in selected_suites
+        }
+
+    normalized = {}
+    for suite_name in selected_suites:
+        ordered_ids = [entry["id"] for entry in get_suite_categories(suite_name)]
+        requested = selected_category_ids.get(suite_name, ordered_ids)
+        if not requested:
+            raise ValueError(f"Select at least one prompt category for {suite_name}.")
+
+        seen = []
+        for category_id in requested:
+            if category_id not in ordered_ids:
+                raise ValueError(f"Unknown category '{category_id}' for suite '{suite_name}'.")
+            if category_id not in seen:
+                seen.append(category_id)
+
+        normalized[suite_name] = [category_id for category_id in ordered_ids if category_id in seen]
+
+    return normalized
+
+
+def selected_categories_for_suite(suite_name, selected_category_ids):
+    selected = set(selected_category_ids.get(suite_name, []))
+    return [
+        entry for entry in get_suite_categories(suite_name)
+        if entry["id"] in selected
+    ]
+
+
+def build_selected_category_summary(selected_suites, selected_category_ids):
+    summary = {}
+    for suite_name in selected_suites:
+        suite_summary = []
+        for category_id in selected_category_ids.get(suite_name, []):
+            category_entry = find_category(suite_name, category_id)
+            if not category_entry:
+                continue
+            suite_summary.append(
+                {
+                    "category_id": category_entry["id"],
+                    "category_title": category_entry["title"],
+                    "case_count": count_category_cases(category_entry),
+                    "prompt_count": count_category_prompts(category_entry),
+                }
+            )
+        summary[suite_name] = suite_summary
+    return summary
 
 
 def normalised_suite_weights(selected_suites):
@@ -549,11 +693,15 @@ def advance_progress(progress_state, progress_callback, suite_name, step_label, 
     )
 
 
-def calculate_total_units(selected_suites):
+def calculate_total_units(selected_suites, selected_category_ids):
     total = 1
     control_units = len(CONTROL_CASES["academic"]) + len(CONTROL_CASES["general"])
     for suite_name in selected_suites:
-        total += sum(len(case["prompts"]) for case in TEST_SUITES[suite_name])
+        total += sum(
+            len(case["prompts"])
+            for category_entry in selected_categories_for_suite(suite_name, selected_category_ids)
+            for case in category_entry["cases"]
+        )
         total += control_units
         total += 1
     return total

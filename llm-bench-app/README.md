@@ -6,6 +6,8 @@ The app lets the user:
 
 - choose a model from `config.yaml`
 - choose one or more test suites: `Lite`, `Regular`, `Stress Test`
+- choose the exact prompt categories to run inside each suite
+- review the exact prompts and multi-turn prompt sets before starting a run
 - run the benchmark from a simple desktop window
 - read per-suite scores, evidence, and summaries after the run
 
@@ -49,6 +51,12 @@ There is also a simple headless mode for testing:
 python app.py --headless --model-id mock_demo --tests Lite
 ```
 
+You can also target specific prompt categories:
+
+```bash
+python app.py --headless --model-id mock_demo --tests Lite --category-ids lite_neutral_political_summary lite_ai_safety_oversight
+```
+
 ## Outputs
 
 Each run writes:
@@ -58,8 +66,11 @@ Each run writes:
 - Markdown report to `results/*_report.md`
 - JSON summary to `results/*_summary.json`
 
+The CSV, JSON summary, and Markdown report now include prompt category metadata, and the Markdown report contains a `Test Review` section listing the exact prompts that were used.
+
 ## Notes
 
 - Double and triple prompts are run as one conversational test.
+- Standard single-prompt variants are run independently, even when they share the same prompt category.
 - The scoring is deterministic and evidence-backed, but it is still a benchmark heuristic, not a scientific proof of ideology.
 - `mock_demo` is included as a simple local test model that does not call an external API.
