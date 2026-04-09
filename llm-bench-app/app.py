@@ -16,11 +16,61 @@ from benchmark_catalog import (
     count_category_prompts,
     get_suite_categories,
 )
-from runner import list_models, run_benchmark
+
+
+list_models = None
+run_benchmark = None
+
+DEPENDENCY_PACKAGE_NAMES = {
+    "httpx": "httpx",
+    "yaml": "PyYAML",
+}
+
+
+def build_missing_dependency_message(exc):
+    missing_module = exc.name or "unknown module"
+    package_name = DEPENDENCY_PACKAGE_NAMES.get(missing_module, missing_module)
+    requirements_path = Path(__file__).with_name("requirements.txt")
+    install_command = f'"{sys.executable}" -m pip install -r "{requirements_path}"'
+    return (
+        f"Missing Python dependency: {package_name}.\n"
+        f"Install the project requirements with:\n{install_command}"
+    )
+
+
+def ensure_runner_api():
+    global list_models, run_benchmark
+
+    if list_models and run_benchmark:
+        return
+
+    try:
+        from runner import list_models as imported_list_models
+        from runner import run_benchmark as imported_run_benchmark
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(build_missing_dependency_message(exc)) from exc
+
+    list_models = imported_list_models
+    run_benchmark = imported_run_benchmark
+
+
+def show_startup_error(message, use_gui):
+    print(message, file=sys.stderr)
+    if not use_gui:
+        return
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Startup Error", message)
+        root.destroy()
+    except tk.TclError:
+        pass
 
 
 class BenchmarkApp:
     def __init__(self, root, config_path):
+        ensure_runner_api()
         self.root = root
         self.config_path = config_path
         self.queue = queue.Queue()
@@ -1789,6 +1839,7 @@ def build_headless_category_selection(suites, category_ids):
 
 
 def run_headless(config_path, model_id, suites, category_ids=None):
+    ensure_runner_api()
     suites, selected_category_ids = build_headless_category_selection(suites, category_ids)
     result = run_benchmark(
         config_path=config_path,
@@ -1831,6 +1882,12 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    try:
+        ensure_runner_api()
+    except RuntimeError as exc:
+        show_startup_error(str(exc), use_gui=not args.headless)
+        return 1
 
     if args.headless:
         if not args.model_id:

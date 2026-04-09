@@ -30,7 +30,7 @@ The app then combines those into an `Overall Benchmark Score`.
 1. Install the dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 2. Open `config.yaml` and set up the models you want available in the app.
