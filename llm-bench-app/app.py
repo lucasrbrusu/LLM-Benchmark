@@ -7,7 +7,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from benchmark_catalog import (
     SUITE_INFO,
@@ -483,6 +483,12 @@ class BenchmarkApp:
             text="Clear",
             style="Small.TButton",
             command=self.clear_suites,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            suite_row,
+            text="Import Test Result",
+            style="Small.TButton",
+            command=self.import_test_result,
         ).pack(side="left")
 
         info_box = self.create_card(outer, "Test Types")
@@ -1415,6 +1421,44 @@ class BenchmarkApp:
                 self.category_vars[suite_name][entry["id"]].set(False)
         self.refresh_test_review()
 
+    def import_test_result(self):
+        if self.run_thread and self.run_thread.is_alive():
+            messagebox.showerror(
+                "Benchmark Running",
+                "Wait for the current benchmark to finish before importing a result.",
+            )
+            return
+
+        path = filedialog.askopenfilename(
+            title="Import Test Result",
+            initialdir=str(default_results_dir(self.config_path)),
+            filetypes=[
+                (
+                    "Benchmark result files",
+                    "*_summary.json *_report.md *_cases.csv *_results.csv",
+                ),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        try:
+            result = load_imported_result(path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Import Failed", str(exc))
+            return
+
+        self.display_result(result)
+        self.set_status_message("Imported test result.", tone="success")
+        self.progress_detail = "Imported result"
+        self.progress_total_units = 1
+        self.progress_completed_units = 1
+        self.progress.configure(maximum=1, value=1)
+        self.update_progress_display(force_complete=True)
+        self.set_log_text(f"Imported result from {result['paths']['summary_path']}\n")
+
     def refresh_test_review(self):
         if not self.test_review_text:
             return
@@ -1603,18 +1647,13 @@ class BenchmarkApp:
         self.root.after(150, self.process_queue)
 
     def finish_run(self, result):
-        self.last_result = result
+        self.display_result(result)
         self.progress_completed_units = self.progress_total_units
         self.progress.configure(value=self.progress_total_units)
-        self.run_button.configure(state="normal")
-        self.open_report_button.configure(state="normal")
-        self.open_results_button.configure(state="normal")
         self.set_status_message("Benchmark finished.", tone="success")
         self.progress_detail = "Benchmark complete"
         self.update_progress_display(force_complete=True)
         self.run_started_at = None
-        self.populate_scores(result["summary"])
-        self.populate_summary(result)
         self.log(f"Report saved to {result['paths']['report_path']}")
 
     def fail_run(self, message):
@@ -1630,9 +1669,43 @@ class BenchmarkApp:
         for item in self.score_tree.get_children():
             self.score_tree.delete(item)
 
+    def display_result(self, result):
+        self.last_result = result
+        self.run_button.configure(state="normal")
+        self.open_report_button.configure(
+            state=self.file_button_state(result, "report_path")
+        )
+        self.open_results_button.configure(
+            state=self.folder_button_state(result, "report_path")
+        )
+
+        if result.get("format") == "legacy_mvp":
+            self.populate_legacy_scores(result["summary"])
+            self.populate_legacy_summary(result)
+            return
+
+        self.populate_scores(result["summary"])
+        self.populate_summary(result)
+
+    def file_button_state(self, result, path_key):
+        path = result.get("paths", {}).get(path_key)
+        if path and Path(path).exists():
+            return "normal"
+        return "disabled"
+
+    def folder_button_state(self, result, path_key):
+        path = result.get("paths", {}).get(path_key)
+        if path and Path(path).parent.exists():
+            return "normal"
+        return "disabled"
+
     def populate_scores(self, summary):
         self.clear_scores()
-        self.score_tree.insert("", "end", values=("Overall Benchmark Score", f"{summary['overall_benchmark_score']:.1f}"))
+        self.score_tree.insert(
+            "",
+            "end",
+            values=("Overall Benchmark Score", f"{summary['overall_benchmark_score']:.1f}"),
+        )
         for name, value in summary["categories"].items():
             self.score_tree.insert("", "end", values=(name, f"{value:.1f}"))
 
@@ -1677,6 +1750,74 @@ class BenchmarkApp:
         lines.extend(
             [
                 "",
+                "Files:",
+                f"- SQLite: {result['paths']['db_path']}",
+                f"- CSV: {result['paths']['csv_path']}",
+                f"- Report: {result['paths']['report_path']}",
+                f"- Summary JSON: {result['paths']['summary_path']}",
+            ]
+        )
+        self.set_summary("\n".join(lines))
+
+    def populate_legacy_scores(self, summary):
+        self.clear_scores()
+        self.score_tree.insert(
+            "", "end", values=("Total Results", summary.get("total_results", "n/a"))
+        )
+        self.score_tree.insert(
+            "", "end", values=("Failed Results", summary.get("failed_results", "n/a"))
+        )
+
+        for model in summary.get("per_model", []):
+            label = model.get("model_id", "model")
+            score_fields = [
+                ("Overall", "overall_score"),
+                ("Political", "political_bias_score"),
+                ("Ethical", "ethical_bias_score"),
+                ("General", "general_topic_score"),
+                ("Bias Risk", "bias_risk_score"),
+            ]
+            for score_label, key in score_fields:
+                self.score_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        f"{label} {score_label}",
+                        format_optional_score(model.get(key)),
+                    ),
+                )
+
+    def populate_legacy_summary(self, result):
+        summary = result["summary"]
+        lines = [
+            "Imported Legacy Benchmark Result",
+            f"Total Results: {summary.get('total_results', 'n/a')}",
+            f"Failed Results: {summary.get('failed_results', 'n/a')}",
+            "",
+            "Model Summary:",
+        ]
+
+        for model in summary.get("per_model", []):
+            lines.extend(
+                [
+                    (
+                        f"{model.get('model_id', 'model')} "
+                        f"({model.get('provider', 'n/a')} / {model.get('model_name', 'n/a')})"
+                    ),
+                    f"- Cases: {model.get('cases', 'n/a')}",
+                    f"- Overall: {format_optional_score(model.get('overall_score'))}",
+                    f"- Political: {format_optional_score(model.get('political_bias_score'))}",
+                    f"- Ethical: {format_optional_score(model.get('ethical_bias_score'))}",
+                    f"- General: {format_optional_score(model.get('general_topic_score'))}",
+                    f"- Bias risk: {format_optional_score(model.get('bias_risk_score'))}",
+                    f"- Refusals: {model.get('refusals', 'n/a')}",
+                    f"- Failures: {model.get('failures', 'n/a')}",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
                 "Files:",
                 f"- SQLite: {result['paths']['db_path']}",
                 f"- CSV: {result['paths']['csv_path']}",
@@ -1744,17 +1885,158 @@ class BenchmarkApp:
     def open_report(self):
         if not self.last_result:
             return
-        open_path(self.last_result["paths"]["report_path"])
+        report_path = self.last_result["paths"].get("report_path")
+        if not report_path or not Path(report_path).exists():
+            messagebox.showerror(
+                "Report Not Found",
+                "The report file could not be found.",
+            )
+            return
+        open_path(report_path)
 
     def open_results_folder(self):
         if not self.last_result:
             return
-        open_path(str(Path(self.last_result["paths"]["report_path"]).parent))
+        report_path = self.last_result["paths"].get("report_path")
+        if not report_path:
+            return
+        folder_path = Path(report_path).parent
+        if not folder_path.exists():
+            messagebox.showerror(
+                "Folder Not Found",
+                "The results folder could not be found.",
+            )
+            return
+        open_path(str(folder_path))
 
 
 def open_path(path):
     if hasattr(os, "startfile"):
         os.startfile(path)
+
+
+def default_results_dir(config_path):
+    config_dir = Path(config_path).resolve().parent
+    results_dir = config_dir / "results"
+    if results_dir.exists():
+        return results_dir
+    return Path.cwd()
+
+
+def load_imported_result(path):
+    selected_path = Path(path)
+    summary_path = matching_summary_path(selected_path)
+    if not summary_path.exists():
+        raise ValueError(
+            "Could not find a matching summary JSON file. Choose a *_summary.json file."
+        )
+
+    data = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+    if is_current_result(data):
+        return data
+
+    paths = build_import_paths(summary_path)
+    if is_current_summary(data):
+        return {
+            "format": "current",
+            "run_id": run_id_from_summary_path(summary_path),
+            "summary": data,
+            "suite_results": [],
+            "paths": paths,
+        }
+
+    if is_legacy_summary(data):
+        return {
+            "format": "legacy_mvp",
+            "run_id": run_id_from_summary_path(summary_path),
+            "summary": data,
+            "suite_results": [],
+            "paths": paths,
+        }
+
+    raise ValueError("This is not a recognised benchmark result summary.")
+
+
+def matching_summary_path(path):
+    name = path.name
+    replacements = {
+        "_report.md": "_summary.json",
+        "_cases.csv": "_summary.json",
+        "_results.csv": "_summary.json",
+    }
+    for ending, summary_ending in replacements.items():
+        if name.endswith(ending):
+            return path.with_name(name[: -len(ending)] + summary_ending)
+    return path
+
+
+def build_import_paths(summary_path):
+    if summary_path.name.endswith("_summary.json"):
+        base_name = summary_path.name[:-len("_summary.json")]
+    else:
+        base_name = summary_path.stem
+
+    result_dir = summary_path.parent
+    cases_csv = result_dir / f"{base_name}_cases.csv"
+    legacy_csv = result_dir / f"{base_name}_results.csv"
+
+    csv_path = cases_csv
+    if not csv_path.exists() and legacy_csv.exists():
+        csv_path = legacy_csv
+
+    db_path = result_dir / "bias_bench.sqlite"
+    if not db_path.exists() and (result_dir / "bench.sqlite").exists():
+        db_path = result_dir / "bench.sqlite"
+
+    return {
+        "db_path": str(db_path),
+        "csv_path": str(csv_path),
+        "report_path": str(result_dir / f"{base_name}_report.md"),
+        "summary_path": str(summary_path),
+    }
+
+
+def is_current_result(data):
+    if not isinstance(data, dict):
+        return False
+    return is_current_summary(data.get("summary")) and isinstance(data.get("paths"), dict)
+
+
+def is_current_summary(data):
+    if not isinstance(data, dict):
+        return False
+
+    required_keys = [
+        "model",
+        "selected_suites",
+        "selected_categories",
+        "categories",
+        "overall_benchmark_score",
+        "suite_summaries",
+    ]
+    return all(key in data for key in required_keys)
+
+
+def is_legacy_summary(data):
+    if not isinstance(data, dict):
+        return False
+    return isinstance(data.get("per_model"), list) and "total_results" in data
+
+
+def run_id_from_summary_path(summary_path):
+    name = summary_path.name
+    if name.endswith("_summary.json"):
+        return name[:-len("_summary.json")]
+    return summary_path.stem
+
+
+def format_optional_score(value):
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def default_profile_store_path():

@@ -9,6 +9,7 @@ The app lets the user:
 - choose the exact prompt categories to run inside each suite
 - review the exact prompts and multi-turn prompt sets before starting a run
 - run the benchmark from a simple desktop window
+- import a previous `*_summary.json`, `*_report.md`, `*_cases.csv`, or `*_results.csv` file
 - read per-suite scores, evidence, and summaries after the run
 
 Each selected suite also runs a small non-political calibration pack so the app can estimate:

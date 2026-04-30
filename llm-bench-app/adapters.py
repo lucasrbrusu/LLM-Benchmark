@@ -1,4 +1,5 @@
 import os
+import re
 import time
 
 import httpx
@@ -6,6 +7,13 @@ import httpx
 
 EMPTY_OPENAI_RESPONSE_RETRY_FLOOR = 2048
 EMPTY_OPENAI_RESPONSE_RETRY_CAP = 8192
+SECRET_PATTERNS = [
+    r"sk-[A-Za-z0-9_-]{16,}",
+    r"sk-ant-[A-Za-z0-9_-]{16,}",
+    r"AIza[A-Za-z0-9_-]{20,}",
+    r"ghp_[A-Za-z0-9_]{20,}",
+    r"github_pat_[A-Za-z0-9_]{20,}",
+]
 
 
 class ProviderError(RuntimeError):
@@ -376,7 +384,7 @@ def parse_json_response(response):
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        body = response.text.strip()
+        body = redact_secrets(response.text.strip())
         if len(body) > 500:
             body = body[:500] + "..."
         raise ProviderError(f"{exc}. Response body: {body}") from exc
@@ -384,7 +392,7 @@ def parse_json_response(response):
     try:
         return response.json()
     except ValueError as exc:
-        body = response.text.strip()
+        body = redact_secrets(response.text.strip())
         if len(body) > 500:
             body = body[:500] + "..."
         raise ProviderError(f"Provider returned invalid JSON: {body}") from exc
@@ -392,6 +400,12 @@ def parse_json_response(response):
 
 def read_api_key(model_config, required):
     env_name = model_config.get("api_key_env")
+    if looks_like_api_key(env_name):
+        raise ProviderError(
+            f"Model '{model_config['id']}' has api_key_env set to something that "
+            "looks like an API key. Put the key in an environment variable instead."
+        )
+
     if not env_name:
         if required:
             raise ProviderError(
@@ -408,6 +422,23 @@ def read_api_key(model_config, required):
             f"Environment variable '{env_name}' is not set for model '{model_config['id']}'"
         )
     return None
+
+
+def looks_like_api_key(value):
+    if not value:
+        return False
+    text = str(value).strip()
+    return any(re.fullmatch(pattern, text) for pattern in SECRET_PATTERNS)
+
+
+def redact_secrets(text):
+    if not text:
+        return text
+
+    clean_text = str(text)
+    for pattern in SECRET_PATTERNS:
+        clean_text = re.sub(pattern, "[redacted-api-key]", clean_text)
+    return clean_text
 
 
 def build_mock_response(prompt):

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from adapters import create_client, validate_model_configuration
+from adapters import create_client, redact_secrets, validate_model_configuration
 from benchmark_catalog import (
     CONTROL_CASES,
     SUITE_INFO,
@@ -273,7 +273,7 @@ def run_case(
             result["output_tokens"] = response.get("output_tokens")
             messages.append({"role": "assistant", "content": response["text"]})
         except Exception as exc:
-            result["error_message"] = str(exc)
+            result["error_message"] = redact_secrets(str(exc))
 
         prompt_results.append(result)
         advance_progress(
@@ -320,7 +320,7 @@ def run_control_pack(
                 result["latency_ms"] = response["latency_ms"]
                 result["output_tokens"] = response.get("output_tokens")
             except Exception as exc:
-                result["error_message"] = str(exc)
+                result["error_message"] = redact_secrets(str(exc))
 
             insert_prompt_result(
                 db_path,
