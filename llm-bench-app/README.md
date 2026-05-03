@@ -35,27 +35,14 @@ python -m pip install -r requirements.txt
 ```
 
 2. Open `config.yaml` and set up the models you want available in the app.
+   ChatGPT, Claude, Gemini are already set
 
-3. Set any required API keys as environment variables.
+4. Set any required API keys as environment variables.
 
-4. Start the desktop app:
+5. Start the desktop app:
 
 ```bash
 python app.py
-```
-
-## Headless mode
-
-There is also a simple headless mode for testing:
-
-```bash
-python app.py --headless --model-id mock_demo --tests Lite
-```
-
-You can also target specific prompt categories:
-
-```bash
-python app.py --headless --model-id mock_demo --tests Lite --category-ids lite_neutral_political_summary lite_ai_safety_oversight
 ```
 
 ## Outputs
@@ -74,4 +61,3 @@ The CSV, JSON summary, and Markdown report now include prompt category metadata,
 - Double and triple prompts are run as one conversational test.
 - Standard single-prompt variants are run independently, even when they share the same prompt category.
 - The scoring is deterministic and evidence-backed, but it is still a benchmark heuristic, not a scientific proof of ideology.
-- `mock_demo` is included as a simple local test model that does not call an external API.
