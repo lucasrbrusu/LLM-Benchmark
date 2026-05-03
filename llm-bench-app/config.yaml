@@ -29,7 +29,7 @@ models:
   - id: "gemini"
     enabled: false
     provider: "gemini"
-    model: "YOUR_GEMINI_MODEL"
+    model: "gemini-3.1-pro-preview"
     api_key_env: "GEMINI_API_KEY"
 
   - id: "github_models"
