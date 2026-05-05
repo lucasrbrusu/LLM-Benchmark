@@ -1,14 +1,13 @@
 @echo off
 setlocal
 
-set "PROJECT_DIR=%~dp0"
-set "APP_DIR=%PROJECT_DIR%llm-bench-app"
+set "APP_DIR=%~dp0"
 
-if not exist "%APP_DIR%\app.py" (
+if not exist "%APP_DIR%app.py" (
     echo Could not find the benchmark app at:
-    echo "%APP_DIR%\app.py"
+    echo "%APP_DIR%app.py"
     echo.
-    echo Keep this launcher in the LLM-Benchmark folder, next to the llm-bench-app folder.
+    echo Keep this launcher in the llm-bench-app folder, next to app.py.
     pause
     exit /b 1
 )
